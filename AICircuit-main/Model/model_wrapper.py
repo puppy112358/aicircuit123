@@ -63,7 +63,27 @@ class PytorchModelWrapper:
     def model_train(self, train_dataloader, test_dataloader):
         train_loss = nn.L1Loss()
 
-        optimizer = optim.Adam(self.model.parameters())
+        lr = self.train_config.get("learning_rate", 1e-3)
+        optimizer = optim.Adam(self.model.parameters(), lr=lr)
+
+        # Optional: ReduceLROnPlateau scheduler
+        use_scheduler = self.train_config.get("use_scheduler", False)
+        scheduler = (
+            optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode="min", factor=0.5, patience=10
+            )
+            if use_scheduler else None
+        )
+
+        # Optional: early stopping
+        use_early_stop = self.train_config.get("use_early_stop", False)
+        patience = self.train_config.get("early_stop_patience", 20)
+        best_val_loss = float("inf")
+        no_improve = 0
+
+        # Optional: gradient clipping
+        clip_grad = self.train_config.get("clip_grad", False)
+        clip_value = self.train_config.get("clip_grad_norm", 1.0)
 
         losses = []
         val_losses = []
@@ -86,6 +106,10 @@ class PytorchModelWrapper:
                 loss = torch.clamp(loss, max=500000, min=-500000)
                 avg_loss += (loss.item() - avg_loss) / (t + 1)
                 loss.backward()
+
+                if clip_grad:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_value)
+
                 optimizer.step()
 
             with torch.no_grad():
@@ -100,10 +124,12 @@ class PytorchModelWrapper:
                     loss = torch.clamp(loss, max=500000, min=-500000)
                     val_avg_loss += (loss.item() - val_avg_loss) / (t + 1)
 
-
             losses.append(avg_loss)
             val_losses.append(val_avg_loss)
-            
+
+            if scheduler is not None:
+                scheduler.step(val_avg_loss)
+
             if self.train_config["loss_per_epoch"]:
                 print(f'epoch: {"{:<4}".format(epoch)} train loss: {"{:1.4f}".format(avg_loss, 4)}, validation loss: {"{:1.4f}".format(val_avg_loss, 4)}')
             else:
@@ -111,6 +137,17 @@ class PytorchModelWrapper:
 
             if self.logging:
                 wandb.log({'train_loss': avg_loss, 'val_loss': val_avg_loss, 'epoch': epoch, })
+
+            # Early stopping
+            if use_early_stop:
+                if val_avg_loss < best_val_loss:
+                    best_val_loss = val_avg_loss
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                    if no_improve >= patience:
+                        print(f'Early stopping at epoch {epoch} (no improvement for {patience} epochs)')
+                        break
 
         result_dict = dict()
 

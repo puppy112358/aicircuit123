@@ -36,6 +36,7 @@ def generate_model_given_config(model_config,num_params,num_perf):
 
     dl_model_mapping = {
         "MultiLayerPerceptron": Model500GELU,
+        "MultiLayerPerceptronV2": MultiLayerPerceptronV2,
         "Transformer": Transformer
     }
 
@@ -43,6 +44,7 @@ def generate_model_given_config(model_config,num_params,num_perf):
         eval_model = sklearn_model_mapping[model_config["model"]]
         copy_model_config = dict(model_config)
         copy_model_config.pop("model", None)
+        copy_model_config.pop("extra_args", None)
         return eval_model(**copy_model_config), 0
     
     elif model_config["model"] in dl_model_mapping.keys():
@@ -51,6 +53,7 @@ def generate_model_given_config(model_config,num_params,num_perf):
         eval_model = dl_model_mapping[model_config["model"]]
         copy_model_config = dict(model_config)
         copy_model_config.pop("model", None)
+        copy_model_config.pop("extra_args", None)  # extra_args go to train_config, not model
         return eval_model(**copy_model_config), 1
     
     else:

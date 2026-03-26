@@ -48,10 +48,15 @@ def plot_loss_with_method_comparison(compare_loss, labels, subsets, visual_confi
         percentage_loss_lower_bound_cross_comparison = [i[percentage_index] for i in compare_loss["lower_bound_list"]]
 
         for compared_item_index in range(len(percentage_loss_mean_cross_comparison)):
-            ax.plot(np.arange(epochs), percentage_loss_mean_cross_comparison[compared_item_index], label=labels[compared_item_index],
+            y_mean = percentage_loss_mean_cross_comparison[compared_item_index]
+            y_lower = percentage_loss_lower_bound_cross_comparison[compared_item_index]
+            y_upper = percentage_loss_upper_bound_cross_comparison[compared_item_index]
+            actual_epochs = len(y_mean)
+            x_axis = np.arange(actual_epochs)
+            
+            ax.plot(x_axis, y_mean, label=labels[compared_item_index],
                     color=color[compared_item_index])
-            ax.fill_between(np.arange(epochs), percentage_loss_lower_bound_cross_comparison[compared_item_index],
-                            percentage_loss_upper_bound_cross_comparison[compared_item_index], alpha=.3,
+            ax.fill_between(x_axis, y_lower, y_upper, alpha=.3,
                             color=color[compared_item_index])
 
         ax.set_xlim([0, None])
@@ -75,7 +80,7 @@ def plot_loss_with_subset_comparison(loss_dict, visual_config, train_config, sav
     num_subset = len(loss_dict["multi_loss"])
     color = visual_config["color"][:num_subset]
     subset = train_config["subset"]
-    epochs = train_config["epochs"]
+    max_plot_epoch = 0
 
     for i in range(len(loss_dict["multi_loss"])):
         
@@ -84,10 +89,17 @@ def plot_loss_with_subset_comparison(loss_dict, visual_config, train_config, sav
         else:
             temp_label = "{:3.1f}% data".format((1-subset[i]) * 100)
 
-        ax.plot(np.arange(epochs), loss_dict["multi_loss"][i], label=temp_label, color=color[i], linewidth=3)
-        ax.fill_between(np.arange(epochs), loss_dict["multi_loss_lower_bounds"][i], loss_dict["multi_loss_upper_bounds"][i], alpha=.3, color=color[i])
+        y_mean = loss_dict["multi_loss"][i]
+        y_lower = loss_dict["multi_loss_lower_bounds"][i]
+        y_upper = loss_dict["multi_loss_upper_bounds"][i]
+        actual_epochs = len(y_mean)
+        x_axis = np.arange(actual_epochs)
+        max_plot_epoch = max(max_plot_epoch, actual_epochs)
 
-        ax.set_xlim([0, epochs + 1])
+        ax.plot(x_axis, y_mean, label=temp_label, color=color[i], linewidth=3)
+        ax.fill_between(x_axis, y_lower, y_upper, alpha=.3, color=color[i])
+
+        ax.set_xlim([0, max_plot_epoch + 1])
         ax.set_ylim([0, None])
 
         if len(subset) > 1:

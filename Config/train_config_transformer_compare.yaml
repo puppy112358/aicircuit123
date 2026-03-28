@@ -1,0 +1,36 @@
+model_config:
+  - model: Transformer
+    dim_model: 192
+    num_heads: 6
+    num_encoder_layers: 4
+    dim_hidden: 384
+    dropout_p: 0.1
+    extra_args:
+      learning_rate: 0.001
+      optimizer: adamw
+      weight_decay: 0.0001
+      batch_size: 128
+  - model: TransformerV2
+    dim_model: 192
+    num_heads: 6
+    num_encoder_layers: 4
+    dim_hidden: 384
+    dropout_p: 0.1
+    extra_args:
+      learning_rate: 0.001
+      optimizer: adamw
+      weight_decay: 0.0001
+      batch_size: 128
+
+device: cpu
+log_experiments: False
+epochs: 40
+subset:
+  - 0.9
+circuits:
+  - CSVA
+compare_method: True
+kfold: False
+independent_kfold: True
+save_format: csv
+save_model: True

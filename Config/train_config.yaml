@@ -2,12 +2,23 @@ model_config:
   - model: MultiLayerPerceptron
   - model: MultiLayerPerceptronV2
     extra_args:
-      learning_rate: 0.001
+      learning_rate: 0.003
+      max_learning_rate: 0.006
+      optimizer: adamw
+      weight_decay: 0.0001
       use_scheduler: True
+      scheduler: onecycle
+      onecycle_pct_start: 0.15
+      onecycle_div_factor: 10.0
+      onecycle_final_div_factor: 100.0
       use_early_stop: True
-      early_stop_patience: 20
+      early_stop_patience: 12
+      early_stop_min_delta: 0.0001
+      use_smooth_l1: True
+      smooth_l1_beta: 0.5
       clip_grad: True
       clip_grad_norm: 1.0
+      batch_size: 128
   # - model: Transformer
   # - model: RandomForest
   # - model: SupportVector

@@ -149,12 +149,92 @@ class Transformer(nn.Module):
 
     def forward(self, src, src_mask=None):
 
+        if src.dim() == 2:
+            src = src.unsqueeze(1)
+        elif src.dim() != 3:
+            raise ValueError("Transformer expects a 2D or 3D tensor input")
+
         src = self.embedding(src)
 
-        if src_mask is None:
-            src_mask = nn.Transformer.generate_square_subsequent_mask(len(src))
+        if src_mask is None and src.size(1) > 1:
+            src_mask = nn.Transformer.generate_square_subsequent_mask(src.size(1)).to(src.device)
 
         transformer_out = self.transformer(src, src_mask)
-        out = self.out(transformer_out)
+        out = self.out(transformer_out[:, 0, :])
 
         return out
+
+
+class TransformerV2(nn.Module):
+
+    def __init__(
+        self,
+        input_count=2,
+        output_count=2,
+        dim_model=192,
+        num_heads=6,
+        num_encoder_layers=4,
+        dim_hidden=384,
+        dropout_p=0.1,
+    ):
+        super(TransformerV2, self).__init__()
+
+        if dim_model % num_heads != 0:
+            raise ValueError("dim_model must be divisible by num_heads")
+
+        self.input_count = input_count
+        self.feature_token_proj = nn.Linear(1, dim_model)
+        self.feature_embedding = nn.Parameter(torch.zeros(1, input_count, dim_model))
+        self.context_token = nn.Parameter(torch.zeros(1, 1, dim_model))
+        self.token_norm = nn.LayerNorm(dim_model)
+        self.dropout = nn.Dropout(dropout_p)
+
+        encoder_layer = TransformerEncoderLayer(
+            d_model=dim_model,
+            nhead=num_heads,
+            dim_feedforward=dim_hidden,
+            dropout=dropout_p,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer = TransformerEncoder(
+            encoder_layer,
+            num_encoder_layers,
+            norm=nn.LayerNorm(dim_model),
+        )
+
+        self.head = nn.Sequential(
+            nn.LayerNorm(dim_model),
+            nn.Linear(dim_model, dim_model),
+            nn.GELU(),
+            nn.Dropout(dropout_p),
+            nn.Linear(dim_model, output_count),
+        )
+
+        nn.init.trunc_normal_(self.context_token, std=0.02)
+        nn.init.trunc_normal_(self.feature_embedding, std=0.02)
+        nn.init.xavier_uniform_(self.feature_token_proj.weight)
+        nn.init.zeros_(self.feature_token_proj.bias)
+
+    def forward(self, src, src_mask=None):
+        del src_mask
+
+        if src.dim() != 2:
+            raise ValueError("TransformerV2 expects a 2D tensor input")
+        if src.size(1) != self.input_count:
+            raise ValueError("TransformerV2 input feature size mismatch")
+
+        src = src.unsqueeze(-1)
+        feature_tokens = self.feature_token_proj(src)
+        feature_tokens = feature_tokens + self.feature_embedding
+
+        batch_size = src.size(0)
+        context = self.context_token.expand(batch_size, -1, -1)
+
+        sequence = torch.cat([context, feature_tokens], dim=1)
+        sequence = self.dropout(self.token_norm(sequence))
+        transformer_out = self.transformer(sequence)
+
+        pooled = transformer_out[:, 0, :]
+        return self.head(pooled)

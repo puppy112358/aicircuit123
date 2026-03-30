@@ -37,7 +37,8 @@ def generate_model_given_config(model_config,num_params,num_perf):
     dl_model_mapping = {
         "MultiLayerPerceptron": Model500GELU,
         "MultiLayerPerceptronV2": MultiLayerPerceptronV2,
-        "Transformer": Transformer
+        "Transformer": Transformer,
+        "TransformerV2": TransformerV2,
     }
 
     if model_config["model"] in sklearn_model_mapping.keys():

@@ -17,14 +17,33 @@ model_config:
     dim_hidden: 384
     dropout_p: 0.1
     extra_args:
-      learning_rate: 0.001
+      learning_rate: 0.0008
       optimizer: adamw
       weight_decay: 0.0001
       batch_size: 128
+      use_smooth_l1: True
+      smooth_l1_beta: 0.3
+      use_scheduler: True
+      scheduler: onecycle
+      max_learning_rate: 0.0025
+      onecycle_pct_start: 0.2
+      onecycle_div_factor: 15.0
+      onecycle_final_div_factor: 150.0
+      clip_grad: True
+      clip_grad_norm: 1.0
+      use_early_stop: True
+      early_stop_patience: 10
+      early_stop_min_delta: 1.0e-5
+      use_amp: True
+      adamw_param_groups: True
 
-device: cpu
+device: cuda
 log_experiments: False
-epochs: 40
+epochs: 100
+num_workers: 4
+pin_memory: True
+persistent_workers: True
+prefetch_factor: 2
 subset:
   - 0.9
 circuits:

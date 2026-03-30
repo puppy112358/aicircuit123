@@ -196,9 +196,13 @@ class TransformerV2(nn.Module):
             dropout=dropout_p,
             activation="gelu",
             batch_first=True,
-            norm_first=False,
+            norm_first=True,
         )
-        self.transformer = TransformerEncoder(encoder_layer, num_encoder_layers)
+        self.transformer = TransformerEncoder(
+            encoder_layer,
+            num_encoder_layers,
+            norm=nn.LayerNorm(dim_model),
+        )
 
         self.head = nn.Sequential(
             nn.LayerNorm(dim_model),
@@ -210,6 +214,8 @@ class TransformerV2(nn.Module):
 
         nn.init.trunc_normal_(self.context_token, std=0.02)
         nn.init.trunc_normal_(self.feature_embedding, std=0.02)
+        nn.init.xavier_uniform_(self.feature_token_proj.weight)
+        nn.init.zeros_(self.feature_token_proj.bias)
 
     def forward(self, src, src_mask=None):
         del src_mask

@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch
 import wandb
+from contextlib import nullcontext
 
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.svm import SVR
@@ -54,20 +55,32 @@ class PytorchModelWrapper:
         batch_size = self.train_config.get("batch_size", 100)
         num_workers = self.train_config.get("num_workers", 0)
         pin_memory = self.train_config.get("pin_memory", False)
-        train_dataloader = DataLoader(
-            train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-        )
-        test_dataloader = DataLoader(
-            test_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-        )
+
+        train_loader_kwargs = {
+            "dataset": train_dataset,
+            "batch_size": batch_size,
+            "shuffle": True,
+            "num_workers": num_workers,
+            "pin_memory": pin_memory,
+        }
+        test_loader_kwargs = {
+            "dataset": test_dataset,
+            "batch_size": batch_size,
+            "shuffle": False,
+            "num_workers": num_workers,
+            "pin_memory": pin_memory,
+        }
+
+        if num_workers > 0:
+            persistent_workers = self.train_config.get("persistent_workers", True)
+            prefetch_factor = self.train_config.get("prefetch_factor", 2)
+            train_loader_kwargs["persistent_workers"] = persistent_workers
+            test_loader_kwargs["persistent_workers"] = persistent_workers
+            train_loader_kwargs["prefetch_factor"] = prefetch_factor
+            test_loader_kwargs["prefetch_factor"] = prefetch_factor
+
+        train_dataloader = DataLoader(**train_loader_kwargs)
+        test_dataloader = DataLoader(**test_loader_kwargs)
         train_result = self.model_train(train_dataloader, test_dataloader)
         return train_result
 
@@ -76,6 +89,9 @@ class PytorchModelWrapper:
         return self.model(torch.Tensor(X).to(self.train_config["device"])).to('cpu').detach().numpy()
 
     def model_train(self, train_dataloader, test_dataloader):
+        device = torch.device(self.train_config["device"])
+        self.model.to(device)
+
         use_smooth_l1 = self.train_config.get("use_smooth_l1", False)
         if use_smooth_l1:
             train_loss = nn.SmoothL1Loss(beta=self.train_config.get("smooth_l1_beta", 0.5))
@@ -85,10 +101,30 @@ class PytorchModelWrapper:
         lr = self.train_config.get("learning_rate", 1e-3)
         weight_decay = self.train_config.get("weight_decay", 0.0)
         optimizer_name = self.train_config.get("optimizer", "adamw").lower()
-        if optimizer_name == "adam":
-            optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+        betas = tuple(self.train_config.get("adam_betas", (0.9, 0.999)))
+        eps = self.train_config.get("adam_eps", 1e-8)
+
+        use_param_groups = optimizer_name == "adamw" and self.train_config.get("adamw_param_groups", True)
+        if use_param_groups:
+            decay_params, no_decay_params = [], []
+            for name, param in self.model.named_parameters():
+                if not param.requires_grad:
+                    continue
+                if param.ndim <= 1 or name.endswith(".bias") or "norm" in name.lower():
+                    no_decay_params.append(param)
+                else:
+                    decay_params.append(param)
+            parameter_groups = [
+                {"params": decay_params, "weight_decay": weight_decay},
+                {"params": no_decay_params, "weight_decay": 0.0},
+            ]
         else:
-            optimizer = optim.AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+            parameter_groups = self.model.parameters()
+
+        if optimizer_name == "adam":
+            optimizer = optim.Adam(parameter_groups, lr=lr, weight_decay=weight_decay, betas=betas, eps=eps)
+        else:
+            optimizer = optim.AdamW(parameter_groups, lr=lr, weight_decay=weight_decay, betas=betas, eps=eps)
 
         # Optional: ReduceLROnPlateau scheduler
         use_scheduler = self.train_config.get("use_scheduler", False)
@@ -122,46 +158,62 @@ class PytorchModelWrapper:
         min_delta = self.train_config.get("early_stop_min_delta", 1e-6)
         best_val_loss = float("inf")
         no_improve = 0
+        best_model_state = None
 
         # Optional: gradient clipping
         clip_grad = self.train_config.get("clip_grad", False)
         clip_value = self.train_config.get("clip_grad_norm", 1.0)
+        pin_memory = self.train_config.get("pin_memory", False)
+
+        use_amp = self.train_config.get("use_amp", True) and device.type == "cuda"
+        scaler = torch.amp.GradScaler(enabled=use_amp)
+        autocast_ctx = torch.cuda.amp.autocast if use_amp else nullcontext
 
         losses = []
         val_losses = []
-        device = self.train_config["device"]
 
         for epoch in range(self.train_config["epochs"]):
             self.model.train()
             avg_loss = 0
             val_avg_loss = 0
             for t, (x, y) in enumerate(train_dataloader):
-                # Zero your gradient
-                optimizer.zero_grad()
-                x_var = torch.autograd.Variable(x.type(torch.FloatTensor)).to(device)
-                y_var = torch.autograd.Variable(y.type(torch.FloatTensor).float()).to(device)
+                optimizer.zero_grad(set_to_none=True)
+                x_var = x.to(device=device, dtype=torch.float32, non_blocking=pin_memory)
+                y_var = y.to(device=device, dtype=torch.float32, non_blocking=pin_memory)
 
-                scores = self.model(x_var)
+                with autocast_ctx():
+                    scores = self.model(x_var)
+                    loss = train_loss(scores.float(), y_var.float())
 
-                loss = train_loss(scores.float(), y_var.float())
                 avg_loss += (loss.item() - avg_loss) / (t + 1)
-                loss.backward()
+                if use_amp:
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
 
                 if clip_grad:
+                    if use_amp:
+                        scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_value)
 
-                optimizer.step()
+                if use_amp:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+
                 if onecycle_scheduler is not None:
                     onecycle_scheduler.step()
 
             with torch.no_grad():
+                self.model.eval()
                 for t, (x, y) in enumerate(test_dataloader):
-                    x_var = x.float().to(device)
-                    y_var = y.float().to(device)
-                    self.model.eval()
-                    scores = self.model(x_var)
+                    x_var = x.to(device=device, dtype=torch.float32, non_blocking=pin_memory)
+                    y_var = y.to(device=device, dtype=torch.float32, non_blocking=pin_memory)
+                    with autocast_ctx():
+                        scores = self.model(x_var)
+                        loss = train_loss(scores.float(), y_var.float())
 
-                    loss = train_loss(scores.float(), y_var.float())
                     val_avg_loss += (loss.item() - val_avg_loss) / (t + 1)
 
             losses.append(avg_loss)
@@ -171,23 +223,31 @@ class PytorchModelWrapper:
                 scheduler.step(val_avg_loss)
 
             if self.train_config["loss_per_epoch"]:
-                print(f'epoch: {"{:<4}".format(epoch)} train loss: {"{:1.4f}".format(avg_loss, 4)}, validation loss: {"{:1.4f}".format(val_avg_loss, 4)}')
+                current_lr = optimizer.param_groups[0]["lr"]
+                print(f'epoch: {"{:<4}".format(epoch)} train loss: {"{:1.4f}".format(avg_loss, 4)}, validation loss: {"{:1.4f}".format(val_avg_loss, 4)}, lr: {current_lr:.6g}')
             else:
                 print(f'epoch: {"{:<4}".format(epoch)} ')
 
             if self.logging:
-                wandb.log({'train_loss': avg_loss, 'val_loss': val_avg_loss, 'epoch': epoch, })
+                wandb.log({'train_loss': avg_loss, 'val_loss': val_avg_loss, 'epoch': epoch, 'lr': optimizer.param_groups[0]['lr']})
 
             # Early stopping
             # if use_early_stop:
-            #     if val_avg_loss < best_val_loss:
+            #     if val_avg_loss + min_delta < best_val_loss:
             #         best_val_loss = val_avg_loss
             #         no_improve = 0
+            #         best_model_state = {
+            #             k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()
+            #         }
             #     else:
             #         no_improve += 1
             #         if no_improve >= patience:
             #             print(f'Early stopping at epoch {epoch} (no improvement for {patience} epochs)')
             #             break
+
+        if use_early_stop and best_model_state is not None:
+            self.model.load_state_dict(best_model_state)
+            self.model.to(device)
 
         result_dict = dict()
 

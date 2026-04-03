@@ -47,7 +47,15 @@ prefetch_factor: 2
 subset:
   - 0.9
 circuits:
-  - CSVA
+  # - CSVA
+  - CVA
+  - TSVA
+  - LNA
+  - Mixer
+  - VCO
+  - PA
+  - Transmitter
+  - Receiver
 compare_method: True
 kfold: False
 independent_kfold: True
